@@ -13,12 +13,13 @@ import matplotlib.pyplot as plt
 
 from run_nerf_helpers import *
 
-from load_llff import load_llff_data
-from load_deepvoxels import load_dv_data
+# from load_llff import load_llff_data
+# from load_deepvoxels import load_dv_data
 from load_blender_kitti360 import load_blender_data
-from load_LINEMOD import load_LINEMOD_data
+# from load_LINEMOD import load_LINEMOD_data
 
 
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 np.random.seed(0)
 DEBUG = False
@@ -32,7 +33,6 @@ def batchify(fn, chunk):
     def ret(inputs):
         return torch.cat([fn(inputs[i:i+chunk]) for i in range(0, inputs.shape[0], chunk)], 0)
     return ret
-
 
 def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024*64):
     """Prepares inputs and applies network 'fn'.
@@ -64,7 +64,6 @@ def batchify_rays(rays_flat, chunk=1024*32, **kwargs):
 
     all_ret = {k : torch.cat(all_ret[k], 0) for k in all_ret}
     return all_ret
-
 
 def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
                   near=0., far=1.,
@@ -133,11 +132,8 @@ def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
     ret_dict = {k : all_ret[k] for k in all_ret if k not in k_extract}
     return ret_list + [ret_dict]
 
-
 def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedir=None, render_factor=0):
-
     H, W, focal = hwf
-
     if render_factor!=0:
         # Render downsampled for speed
         H = H//render_factor
@@ -274,20 +270,16 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
 
     dists = z_vals[...,1:] - z_vals[...,:-1]
     dists = torch.cat([dists, torch.Tensor([1e10]).expand(dists[...,:1].shape)], -1)  # [N_rays, N_samples]
-
     dists = dists * torch.norm(rays_d[...,None,:], dim=-1)
-
     rgb = torch.sigmoid(raw[...,:3])  # [N_rays, N_samples, 3]
     noise = 0.
     if raw_noise_std > 0.:
         noise = torch.randn(raw[...,3].shape) * raw_noise_std
-
         # Overwrite randomly sampled data if pytest
         if pytest:
             np.random.seed(0)
             noise = np.random.rand(*list(raw[...,3].shape)) * raw_noise_std
             noise = torch.Tensor(noise)
-
     alpha = raw2alpha(raw[...,3] + noise, dists)  # [N_rays, N_samples]
     # weights = alpha * tf.math.cumprod(1.-alpha + 1e-10, -1, exclusive=True)
     weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)), 1.-alpha + 1e-10], -1), -1)[:, :-1]
@@ -299,9 +291,7 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
 
     if white_bkgd:
         rgb_map = rgb_map + (1.-acc_map[...,None])
-
     return rgb_map, disp_map, acc_map, weights, depth_map
-
 
 def render_rays(ray_batch,
                 network_fn,
@@ -357,7 +347,6 @@ def render_rays(ray_batch,
         z_vals = near * (1.-t_vals) + far * (t_vals)
     else:
         z_vals = 1./(1./near * (1.-t_vals) + 1./far * (t_vals))
-
     z_vals = z_vals.expand([N_rays, N_samples])
 
     if perturb > 0.:
@@ -411,9 +400,7 @@ def render_rays(ray_batch,
     for k in ret:
         if (torch.isnan(ret[k]).any() or torch.isinf(ret[k]).any()) and DEBUG:
             print(f"! [Numerical Error] {k} contains nan or inf.")
-
     return ret
-
 
 def config_parser():
     import configargparse
@@ -561,7 +548,7 @@ def train():
         images, poses, render_poses, hwf, i_split = load_blender_data(args.datadir, args.half_res, args.testskip)
         print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
         i_train, i_val, i_test = i_split
-        near = 10.
+        near = 2.
         far = 100.
         if args.white_bkgd:
             images = images[...,:3]*images[...,-1:] + (1.-images[...,-1:])
@@ -598,20 +585,12 @@ def train():
     H, W = int(H), int(W)
     hwf = [H, W, focal]
 
-    if K is None:
+    if K is None:    
         K = np.array([
-            [788.629315, 0, 687.158398],
-            [0, 786.382230, 317.752196],
-            [0, 0, 1]
+        [focal, 0, 0.5*W],
+        [0, focal, 0.5*H],
+        [0, 0, 1]
         ])
-
-    # K_00: 788.629315 0.000000 687.158398 0.000000 786.382230 317.752196 0.000000 0.000000 0.000000
-    
-    # K = np.array([
-    #     [focal, 0, 0.5*W],
-    #     [0, focal, 0.5*H],
-    #     [0, 0, 1]
-    # ])
 
     if args.render_test:
         render_poses = np.array(poses[i_test])
@@ -658,7 +637,6 @@ def train():
             testsavedir = os.path.join(basedir, expname, 'renderonly_{}_{:06d}'.format('test' if args.render_test else 'path', start))
             os.makedirs(testsavedir, exist_ok=True)
             print('test poses shape', render_poses.shape)
-
             rgbs, _ = render_path(render_poses, hwf, K, args.chunk, render_kwargs_test, gt_imgs=images, savedir=testsavedir, render_factor=args.render_factor)
             print('Done rendering', testsavedir)
             imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
@@ -689,15 +667,15 @@ def train():
     if use_batching:
         rays_rgb = torch.Tensor(rays_rgb).to(device)
 
-    N_iters = 10000 + 1
+    N_iters = 50000 + 1
     print('Begin')
     print('TRAIN views are', i_train)
-    print('TEST views are', i_test)
     print('VAL views are', i_val)
+    print('TEST views are', i_test)
 
     # Summary writers
     # writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
-    
+
     start = start + 1
     for i in trange(start, N_iters):
         time0 = time.time()
@@ -774,7 +752,6 @@ def train():
             param_group['lr'] = new_lrate
 
         dt = time.time()-time0
-
         # Rest is logging
         if i%args.i_weights==0:
             path = os.path.join(basedir, expname, '{:06d}.tar'.format(i))
@@ -815,5 +792,6 @@ def train():
         global_step += 1
 
 if __name__=='__main__':
+
     torch.set_default_tensor_type('torch.cuda.FloatTensor')
     train()
